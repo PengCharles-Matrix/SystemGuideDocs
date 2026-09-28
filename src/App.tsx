@@ -85,7 +85,7 @@ function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand"><span className="brand-mark">▦</span><strong>DocFlow Studio</strong><span className="slash">/</span><span className="crumb">Docs</span></div>
+        <div className="brand"><span className="brand-mark">▦</span><strong>System Guide Docs</strong><span className="slash">/</span><span className="crumb">Docs</span></div>
         <div className="search-wrap"><span>{icon("search")}</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search documentation..." /><kbd>⌘K</kbd></div>
         <div className="top-actions">
           <div className="segmented">{(["Reader", "Editor", "Manage"] as const).map((item) => <button key={item} className={mode === item ? "active" : ""} onClick={() => setMode(item)}>{item}</button>)}</div>
