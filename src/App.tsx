@@ -39,7 +39,7 @@ function App() {
   const [newCategory, setNewCategory] = useState("");
   const [draft, setDraft] = useState("");
   const [meta, setMeta] = useState({ title: "", description: "", category: "", badge: "Overview" });
-
+  const [activeSectionId, setActiveSectionId] = useState("");
   useEffect(() => { localStorage.setItem("systemguide-docs", JSON.stringify(docs)); }, [docs]);
   useEffect(() => { localStorage.setItem("systemguide-categories", JSON.stringify(categories)); }, [categories]);
   useEffect(() => { localStorage.setItem("systemguide-site-title", siteTitle); }, [siteTitle]);
@@ -61,12 +61,35 @@ function App() {
 
   useEffect(() => {
     if (!active) return;
+    setActiveSectionId(active.sections[0]?.id ?? "");
     setDraft(active.sections.map((s) => {
       const bullets = s.bullets?.length ? "\n\n" + s.bullets.map((b) => "- " + b).join("\n") : "";
       return "## " + s.title + "\n" + s.paragraphs.join("\n\n") + bullets;
     }).join("\n\n"));
     setMeta({ title: active.title, description: active.description, category: active.category, badge: "Overview" });
   }, [active]);
+
+  useEffect(() => {
+    const reader = document.querySelector<HTMLElement>(".reader-content");
+    if (!reader || mode !== "Reader" || !active.sections.length) return;
+    const updateCurrentSection = () => {
+      const readerTop = reader.getBoundingClientRect().top;
+      const threshold = readerTop + 120;
+      let current = active.sections[0].id;
+      for (const section of active.sections) {
+        const element = document.getElementById(section.id);
+        if (element && element.getBoundingClientRect().top <= threshold) current = section.id;
+      }
+      setActiveSectionId(current);
+    };
+    updateCurrentSection();
+    reader.addEventListener("scroll", updateCurrentSection, { passive: true });
+    window.addEventListener("resize", updateCurrentSection);
+    return () => {
+      reader.removeEventListener("scroll", updateCurrentSection);
+      window.removeEventListener("resize", updateCurrentSection);
+    };
+  }, [active, mode]);
 
   if (!active) return <div className="app-shell empty-workspace"><header className="topbar"><div className="brand"><span className="brand-mark">▦</span><strong>System Guide Docs</strong></div></header><main className="empty-recovery"><h1>No documents found</h1><p>Your workspace is empty or its saved document data could not be loaded.</p><button className="primary" onClick={() => { setDocs(initialDocs); setActiveId(initialDocs[0].id); setMode("Reader"); }}>Restore starter documentation</button></main></div>;
 
@@ -76,6 +99,16 @@ function App() {
   const storageLabel = storageBytes >= 1024 * 1024 ? `${(storageBytes / 1024 / 1024).toFixed(1)} MB` : `${(storageBytes / 1024).toFixed(1)} KB`;
 
   const updateMeta = (key: keyof typeof meta, value: string) => setMeta((m) => ({ ...m, [key]: value }));
+
+  const activeIndex = Math.max(0, filtered.findIndex((doc) => doc.id === active.id));
+  const previousDoc = activeIndex > 0 ? filtered[activeIndex - 1] : null;
+  const nextDoc = activeIndex >= 0 && activeIndex < filtered.length - 1 ? filtered[activeIndex + 1] : null;
+  const openDoc = (doc: Doc | null) => {
+    if (!doc) return;
+    setActiveId(doc.id);
+    setMode("Reader");
+    document.querySelector<HTMLElement>(".reader-content")?.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   const createCategory = () => {
     const value = newCategory.trim();
@@ -280,9 +313,13 @@ function App() {
               <div className="article-toolbar"><span className="pill">Overview</span><div><button onClick={() => navigator.clipboard?.writeText(window.location.href + "#" + active.id)}>{icon("share")} Share</button><button onClick={() => setMode("Editor")}>{icon("edit")} Edit</button></div></div>
               <article><h1>{active.title}</h1><p className="lead">{active.description}</p><div className="meta">{active.author}<span>•</span><span>Updated {active.updated}</span></div><hr />
                 {active.sections.map((section) => <section className="doc-section" id={section.id} key={section.id}><h2>{section.title}</h2>{section.paragraphs.map((paragraph, index) => renderDocParagraph(paragraph, index))}{section.bullets && <ul>{section.bullets.map((bullet) => <li key={bullet}>{bullet}</li>)}</ul>}</section>)}
+                <nav className="doc-pagination" aria-label="Document navigation">
+                  <button className="doc-nav-button previous" disabled={!previousDoc} onClick={() => openDoc(previousDoc)}><span className="doc-nav-label">← Previous</span><strong>{previousDoc?.title ?? "No previous document"}</strong></button>
+                  <button className="doc-nav-button next" disabled={!nextDoc} onClick={() => openDoc(nextDoc)}><span className="doc-nav-label">Next →</span><strong>{nextDoc?.title ?? "No next document"}</strong></button>
+                </nav>
               </article>
             </div>
-            <aside className="toc"><div className="toc-title">ON THIS PAGE</div>{active.sections.map((section, index) => <a href={"#" + section.id} className={index === 0 ? "current" : ""} key={section.id}>{section.title}</a>)}<div className="toc-divider" /><span>{active.readTime} min read</span><a href="#top" className="back-top">{icon("top")} Top</a></aside>
+            <aside className="toc"><div className="toc-title">ON THIS PAGE</div>{active.sections.map((section) => <a href={"#" + section.id} className={activeSectionId === section.id ? "current" : ""} onClick={(event) => { event.preventDefault(); setActiveSectionId(section.id); document.getElementById(section.id)?.scrollIntoView({ behavior: "smooth", block: "start" }); }} key={section.id}>{section.title}</a>)}<div className="toc-divider" /><span>{active.readTime} min read</span><button className="back-top" onClick={() => document.querySelector<HTMLElement>(".reader-content")?.scrollTo({ top: 0, behavior: "smooth" })}>{icon("top")} Top</button></aside>
           </div>}
         </main>
       </div>
