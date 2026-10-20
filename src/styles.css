@@ -75,6 +75,16 @@ article h1, .editor-panel h1, .manage-panel h1 { font-size: 37px; line-height: 1
 article hr { border: 0; border-top: 1px solid #ededee; margin: 0 0 45px; }
 .doc-section { scroll-margin-top: 80px; margin-bottom: 44px; }
 .doc-section h2 { font-size: 24px; letter-spacing: -.025em; margin: 0 0 20px; padding-bottom: 10px; border-bottom: 1px solid #eeeeef; }
+.doc-inline-image {
+  display: block;
+  max-width: 100%;
+  max-height: 72vh;
+  height: auto;
+  object-fit: contain;
+  margin: 12px 0;
+  border-radius: 8px;
+}
+
 .doc-section p { font-size: 15px; line-height: 1.9; color: #2f333a; margin: 0 0 18px; }
 .doc-section ul { margin: 12px 0 0; padding-left: 25px; }
 .doc-section li { font-size: 14px; line-height: 1.75; color: #33363c; margin-bottom: 14px; padding-left: 4px; }
@@ -361,3 +371,128 @@ article hr { border: 0; border-top: 1px solid #ededee; margin: 0 0 45px; }
 }
 @media(max-width:900px) { .manage-inner { padding-left:22px; padding-right:22px; } .document-row { grid-template-columns:2fr 1.3fr .8fr .6fr .8fr 1fr; } }
 @media(max-width:700px) { .manage-inner { padding-left:14px; padding-right:14px; } .document-filters { height:auto; align-items:stretch; flex-direction:column; } .document-row { grid-template-columns:1.7fr 1fr .7fr; row-gap:5px; padding:10px 12px; } .document-head { display:none; } .document-row > :nth-child(4), .document-row > :nth-child(5) { display:none; } .doc-actions { justify-content:flex-end; } .manage-tabs { max-width:none; } }
+
+
+
+.uploaded-files-panel { margin: 0 22px 18px; padding: 14px 16px; border: 1px solid #e2e5e9; border-radius: 10px; background: #fff; }
+.uploaded-files-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: #20242a; font-size: 12px; }
+.uploaded-files-heading span, .upload-status { color: #777f89; font-size: 11px; }
+.upload-status { margin: 10px 0 0; }
+.upload-status-error { margin: 10px 0 0; color: #b42318; font-size: 11px; }
+.uploaded-files-list { display: flex; flex-direction: column; gap: 7px; list-style: none; margin: 12px 0 0; padding: 0; }
+.uploaded-files-list li { display: flex; align-items: center; gap: 12px; min-width: 0; padding-top: 8px; border-top: 1px solid #f0f1f3; font-size: 11px; }
+.uploaded-files-list a { overflow-wrap: anywhere; color: #0969da; text-decoration: none; flex: 1; }
+.uploaded-files-list a:hover { text-decoration: underline; }
+.uploaded-files-list li > span { white-space: nowrap; color: #7b8189; }
+.uploaded-files-list li > button { flex-shrink: 0; border: 1px solid #d6dbe1; border-radius: 6px; background: #fff; padding: 5px 8px; color: #303740; font-size: 10px; cursor: pointer; }
+.uploaded-files-list li > button:hover { background: #f5f8fb; }
+@media(max-width:700px) { .uploaded-files-panel { margin: 0 10px 14px; padding: 12px; } .uploaded-files-list li { flex-wrap: wrap; } }
+
+/* Keep the shared upload library collapsed by default so the editor and preview
+   have the full available viewport. Opening it is optional and reversible. */
+.uploaded-files-toggle-row { display:flex; align-items:center; justify-content:flex-end; gap:12px; padding:7px 24px; border-bottom:1px solid #ececef; background:#fff; }
+.uploaded-files-summary { margin-right:auto; color:#777; font-size:11px; }
+.uploaded-files-toggle { border:1px solid #dfe3e8; border-radius:7px; background:#fff; color:#424852; padding:6px 10px; font-size:11px; cursor:pointer; }
+.uploaded-files-toggle:hover, .uploaded-files-close:hover { background:#f3f5f8; }
+.uploaded-files-panel { position:relative; max-height:220px; overflow-y:auto; overscroll-behavior:contain; border-bottom:1px solid #e5e7eb; }
+.uploaded-files-heading { display:flex; align-items:center; gap:12px; }
+.uploaded-files-close { margin-left:auto; border:0; background:transparent; color:#626975; border-radius:6px; font-size:21px; line-height:1; padding:3px 8px; cursor:pointer; }
+@media (max-width: 640px) { .uploaded-files-toggle-row { padding:7px 12px; } .uploaded-files-summary { font-size:10px; } }
+
+/* Keep the editor workspace within the viewport and let the preview scroll independently. */
+.editor-workspace {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.editor-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  grid-template-rows: minmax(0, 1fr);
+}
+.editor-body.view-split {
+  min-height: 0;
+}
+.editor-body.view-split .editor-pane,
+.editor-body.view-split .preview-pane {
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.editor-body.view-split .editor-canvas {
+  display: block;
+  height: 100%;
+  min-height: 100%;
+  resize: none;
+}
+.editor-body.view-split .preview-pane {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
+.editor-body.view-split .preview-card {
+  min-height: 0;
+  overflow-wrap: anywhere;
+}
+.editor-body.view-html {
+  overflow: auto;
+}
+.editor-body.view-visual {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+@media (max-width: 800px) {
+  .editor-workspace { overflow: auto; }
+  .editor-body.view-split { overflow: visible; }
+  .editor-body.view-split .editor-pane,
+  .editor-body.view-split .preview-pane { height: auto; overflow: visible; }
+  .editor-body.view-split .editor-canvas { height: 420px; min-height: 420px; }
+  .editor-body.view-split .preview-pane { max-height: 65vh; overflow-y: auto; }
+}
+
+/* Login and role-aware session controls */
+.auth-screen {
+  min-height: 100vh; display: grid; place-items: center; padding: 28px 16px;
+  background: radial-gradient(ellipse at top, #f4f6fb 0%, #f8fafc 42%, #f3f4f6 100%);
+}
+.auth-card {
+  width: min(100%, 440px); padding: 36px; background: #fff; border: 1px solid #e7e9ef;
+  border-radius: 18px; box-shadow: 0 24px 70px rgba(15,23,42,.08);
+}
+.auth-mark { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; background: #171717; color: white; font-size: 22px; margin-bottom: 22px; }
+.auth-eyebrow { color: #777f8d; font-size: 10px; font-weight: 800; letter-spacing: .16em; margin: 0 0 9px; }
+.auth-card h1 { margin: 0 0 10px; color: #111827; font-size: 29px; letter-spacing: -.04em; }
+.auth-description { color: #737987; font-size: 13px; line-height: 1.6; margin: 0 0 25px; }
+.auth-choice { display: flex; align-items: center; gap: 13px; width: 100%; text-align: left; padding: 14px; margin-top: 10px; border: 1px solid #e1e4ea; border-radius: 11px; background: #fff; color: #252b36; transition: border-color .15s, background .15s; }
+.auth-choice:hover { border-color: #aeb9cc; background: #fafbfc; }
+.auth-choice:disabled { opacity: .65; cursor: wait; }
+.auth-admin-choice { border-color: #d4dbe8; }
+.auth-choice-icon { flex: 0 0 38px; height: 38px; display: grid; place-items: center; border-radius: 9px; background: #f1f4f8; color: #29384f; font-size: 19px; }
+.auth-choice > span:nth-child(2) { min-width: 0; flex: 1; display: grid; gap: 4px; }
+.auth-choice strong { font-size: 13px; }
+.auth-choice small { color: #7b8290; font-size: 11px; line-height: 1.45; }
+.auth-arrow { color: #9aa1ad; font-size: 19px; }
+.auth-form { display: grid; gap: 12px; padding: 16px; margin-top: 8px; border-radius: 10px; background: #f8fafc; border: 1px solid #e8ebf0; }
+.auth-form label { display: grid; gap: 6px; color: #505968; font-size: 12px; font-weight: 600; }
+.auth-form input { width: 100%; border: 1px solid #d9dee7; border-radius: 7px; padding: 10px 11px; background: #fff; color: #111827; outline: none; }
+.auth-form input:focus { border-color: #7d91b1; box-shadow: 0 0 0 3px rgba(96,125,171,.12); }
+.auth-submit { padding: 10px 12px; border: 0; border-radius: 7px; color: #fff; background: #202b3c; font-size: 12px; font-weight: 700; }
+.auth-submit:disabled { opacity: .6; }
+.auth-error { margin: 15px 0 0; padding: 10px 12px; border: 1px solid #fecaca; border-radius: 8px; background: #fff7f7; color: #b42318; font-size: 12px; line-height: 1.5; }
+.auth-footnote { margin: 20px 0 0; color: #9aa0aa; font-size: 10px; line-height: 1.6; text-align: center; }
+.auth-session { display: flex; align-items: center; gap: 8px; color: #7b8290; font-size: 11px; white-space: nowrap; }
+.auth-session button { padding: 6px 9px; border: 1px solid #e1e4ea; border-radius: 7px; background: #fff; color: #4b5563; font-size: 11px; }
+.auth-session button:hover { background: #f5f6f8; }
+@media (max-width: 720px) {
+  .auth-card { padding: 26px 20px; }
+  .auth-session > span { display: none; }
+  .topbar { gap: 8px; }
+  .brand { min-width: 0; }
+}

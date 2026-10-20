@@ -4,19 +4,28 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -k \"npm:server:dev\" \"vite\"",
+    "server:dev": "node server.mjs",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "concurrently -k \"npm:start\" \"vite preview\"",
+    "start": "node server.mjs"
   },
   "dependencies": {
+    "dotenv": "^18.0.8",
+    "express": "^5.3.0",
+    "mongodb": "^7.7.0",
+    "multer": "^2.4.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.3.3",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.3.0",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "@vitejs/plugin-react": "latest",
+    "concurrently": "^10.0.6",
     "tailwindcss": "4.3.3",
     "typescript": "latest",
     "vite": "8.3.1"
