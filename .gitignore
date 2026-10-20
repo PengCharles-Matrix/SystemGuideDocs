@@ -1,4 +1,10 @@
 node_modules/
 dist/
+data/uploads/
 *.local
 .DS_Store
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
