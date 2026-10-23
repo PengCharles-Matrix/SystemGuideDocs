@@ -142,22 +142,37 @@ app.post("/api/auth/guest", (_req, res) => {
   return res.json({ authenticated: true, role: "guest", username });
 });
 app.post("/api/auth/admin", async (req, res) => {
-  const localTestAdmin = process.env.NODE_ENV === "development" && process.env.ALLOW_LOCAL_ADMIN_WITHOUT_MONGO === "true";
-  if ((!mongoReady && !localTestAdmin) || !process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32 || !process.env.PASSWORD_SALT || process.env.PASSWORD_SALT.length < 32 || !adminPassword) return res.status(503).json({ error: "Admin login is not configured. Set MongoDB, SESSION_SECRET, PASSWORD_SALT and admin credentials on the server." });
+  if (!mongoReady || !users || !process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32) {
+    return res.status(503).json({ error: "Login is unavailable. Check the MongoDB connection and SESSION_SECRET configuration." });
+  }
   const username = String(req.body?.username || "").trim();
   const password = String(req.body?.password || "");
-  if (!username || !password || username.length > 100 || password.length > 1024) return res.status(400).json({ error: "Enter your admin username and password." });
+  if (!username || !password || username.length > 100 || password.length > 1024) {
+    return res.status(400).json({ error: "Enter your username and password." });
+  }
   try {
-    const suppliedHash = passwordHash(password);
-    const configuredHash = passwordHash(adminPassword);
-    if (username !== adminUsername || suppliedHash.length !== configuredHash.length || !timingSafeEqual(suppliedHash, configuredHash)) {
-      if (mongoReady) await users.updateOne({ username: "admin-login-attempts" }, { $inc: { failedAttempts: 1 }, $set: { lastFailedAt: new Date() } }, { upsert: true });
-      return res.status(401).json({ error: "Invalid admin username or password." });
+    // Existing Atlas users are all administrators. Authenticate against the existing
+    // username/userpassword fields without requiring a separate role field.
+    const user = await users.findOne({ username });
+    const storedPassword = user?.userpassword;
+    const passwordMatches = typeof storedPassword === "string" &&
+      storedPassword.length === password.length &&
+      timingSafeEqual(Buffer.from(storedPassword), Buffer.from(password));
+    if (!user || !passwordMatches) {
+      await users.updateOne(
+        { username: "admin-login-attempts" },
+        { $inc: { failedAttempts: 1 }, $set: { lastFailedAt: new Date() } },
+        { upsert: true },
+      );
+      return res.status(401).json({ error: "Invalid username or password." });
     }
-    if (mongoReady) await users.updateOne({ username: adminUsername }, { $set: { username: adminUsername, role: "admin", lastLogin: new Date() }, $setOnInsert: { createdAt: new Date() } }, { upsert: true });
-    setSession(res, { username: adminUsername, role: "admin" });
-    return res.json({ authenticated: true, role: "admin", username: adminUsername });
-  } catch (error) { return res.status(500).json({ error: "Admin login failed." }); }
+    await users.updateOne({ _id: user._id }, { $set: { lastLogin: new Date() } });
+    setSession(res, { username: user.username, role: "admin" });
+    return res.json({ authenticated: true, role: "admin", username: user.username });
+  } catch (error) {
+    console.error("User login failed:", error.message);
+    return res.status(500).json({ error: "Login failed." });
+  }
 });
 app.post("/api/auth/logout", (_req, res) => {
   res.clearCookie(cookieName, { httpOnly: true, sameSite: "lax", path: "/" });
