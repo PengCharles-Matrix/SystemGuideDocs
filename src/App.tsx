@@ -74,7 +74,93 @@ function App() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [showUploadedFiles, setShowUploadedFiles] = useState(false);
+  const [serverContentLoaded, setServerContentLoaded] = useState(false);
+  const [serverHasContent, setServerHasContent] = useState<boolean | null>(null);
+  const [syncStatus, setSyncStatus] = useState<"loading" | "saving" | "synced" | "error">("loading");
   useEffect(() => { localStorage.setItem("systemguide-docs", JSON.stringify(docs)); }, [docs]);
+  // Load the shared workspace from MongoDB Atlas. localStorage is retained only as a
+  // recovery cache and as the one-time source for migrating an existing browser workspace.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/content")
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not load shared documentation.");
+        return data as { content: { docs: Doc[]; categories: string[]; siteTitle: string } | null };
+      })
+      .then(({ content }) => {
+        if (cancelled) return;
+        if (content && Array.isArray(content.docs) && content.docs.length > 0 &&
+            Array.isArray(content.categories) && typeof content.siteTitle === "string") {
+          setDocs(content.docs);
+          setCategories(content.categories);
+          setSiteTitle(content.siteTitle);
+          setSiteTitleDraft(content.siteTitle);
+          setActiveId(content.docs[0]?.id ?? "platform");
+          setServerHasContent(true);
+          setSyncStatus("synced");
+        } else {
+          setServerHasContent(false);
+          setSyncStatus("loading");
+        }
+        setServerContentLoaded(true);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error("MongoDB workspace load failed:", error);
+        setServerHasContent(null);
+        setSyncStatus("error");
+        setServerContentLoaded(true);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  // If Atlas has no workspace yet, migrate this admin browser's existing content once.
+  useEffect(() => {
+    if (role !== "admin" || !serverContentLoaded || serverHasContent !== false) return;
+    let cancelled = false;
+    const migrateExistingWorkspace = async () => {
+      setSyncStatus("saving");
+      try {
+        const response = await fetch("/api/content", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ docs, categories, siteTitle }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not migrate existing documentation.");
+        if (!cancelled) { setServerHasContent(true); setSyncStatus("synced"); }
+      } catch (error) {
+        console.error("MongoDB workspace migration failed:", error);
+        if (!cancelled) setSyncStatus("error");
+      }
+    };
+    void migrateExistingWorkspace();
+    return () => { cancelled = true; };
+  }, [role, serverContentLoaded, serverHasContent, docs, categories, siteTitle]);
+
+  // Admin changes are automatically saved to the shared database after a short debounce.
+  useEffect(() => {
+    if (role !== "admin" || !serverContentLoaded || serverHasContent !== true) return;
+    const timer = window.setTimeout(async () => {
+      setSyncStatus("saving");
+      try {
+        const response = await fetch("/api/content", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ docs, categories, siteTitle }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not save shared documentation.");
+        setSyncStatus("synced");
+      } catch (error) {
+        console.error("MongoDB workspace save failed:", error);
+        setSyncStatus("error");
+      }
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [role, serverContentLoaded, serverHasContent, docs, categories, siteTitle]);
+
   useEffect(() => {
     let cancelled = false;
     if (role !== "admin") { setUploadedFiles([]); return () => { cancelled = true; }; }
@@ -287,7 +373,7 @@ function App() {
       window.alert("Keep at least one document in the workspace. Create another page before deleting this one.");
       return;
     }
-    if (!window.confirm(`Delete “${doc.title}” permanently from this browser?`)) return;
+    if (!window.confirm(`Delete “${doc.title}” permanently from the shared workspace?`)) return;
     const remaining = docs.filter((item) => item.id !== doc.id);
     setDocs(remaining);
     if (activeId === doc.id) { setActiveId(remaining[0].id); setMode("Reader"); }
@@ -350,7 +436,7 @@ function App() {
   };
 
   const resetDemoData = () => {
-    if (!window.confirm("Reset the workspace to the starter documentation? Your current local data will be replaced.")) return;
+    if (!window.confirm("Reset the shared workspace to the starter documentation? Current documentation will be replaced for all users.")) return;
     setDocs(initialDocs); setCategories(initialCategoryOrder); setActiveId(initialDocs[0].id); setCategory("All Categories"); setQuery("");
   };
 
@@ -461,15 +547,15 @@ function App() {
               {(editorView === "Visual" || editorView === "Split") && <div className="editor-pane"><div className="pane-label">EDITOR</div><textarea className="editor-canvas" value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} /></div>}
               {(editorView === "Split" || editorView === "HTML") && <div className="preview-pane"><div className="pane-label">{editorView === "HTML" ? "HTML" : "PREVIEW"}</div><div className="preview-card">{renderPreview(draft)}</div></div>}
             </div>
-          </div> : mode === "Manage" ? <div className="manage-page"><div className="manage-inner"><h1>Management</h1><p className="manage-subtitle">Organize categories, review all documentation pages, and manage local storage.</p><div className="manage-tabs"><button className={manageTab === "categories" ? "active" : ""} onClick={() => setManageTab("categories")}>Categories ({categories.length})</button><button className={manageTab === "documents" ? "active" : ""} onClick={() => setManageTab("documents")}>All Documents ({docs.length})</button><button className={manageTab === "settings" ? "active" : ""} onClick={() => setManageTab("settings")}>Settings &amp; Storage</button></div>{manageTab === "categories" && <section className="management-view"><div className="management-heading"><h2>CATEGORY HIERARCHY</h2><button className="manage-new" onClick={() => setCategoryOpen(true)}>＋ New Category</button></div><div className="category-list">{categories.map((name, index) => <div className="category-item" key={name}><div className="category-main"><span className="category-symbol">{index === 0 ? "◎" : index === 1 ? "♢" : index === 2 ? "⌂" : "♧"}</span><div><strong>{name}</strong><button className="inline-edit" onClick={() => renameCategory(name)} title={"Rename " + name}>{icon("edit")}</button><small>{docs.filter((doc) => doc.category === name).length} {docs.filter((doc) => doc.category === name).length === 1 ? "document" : "documents"}</small></div></div><div className="category-actions"><button title="Move up" disabled={index === 0} onClick={() => setCategories((items) => { const next=[...items]; [next[index-1],next[index]]=[next[index],next[index-1]]; return next; })}>↑</button><button title="Move down" disabled={index === categories.length-1} onClick={() => setCategories((items) => { const next=[...items]; [next[index],next[index+1]]=[next[index+1],next[index]]; return next; })}>↓</button><button className="manage-trash" title="Delete category" onClick={() => deleteCategory(name)}>{icon("trash")}</button></div></div>)}</div></section>}{manageTab === "documents" && <section className="management-view"><div className="document-filters"><div className="manage-search"><span>{icon("search")}</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search documents by title or category..." /></div><label>Category:<select value={category} onChange={(e) => setCategory(e.target.value)}><option value="All Categories">All ({docs.length})</option>{categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label></div><div className="document-table"><div className="document-row document-head"><span>TITLE</span><span>CATEGORY</span><span>BADGE</span><span>WORDS</span><span>UPDATED</span><span>ACTIONS</span></div>{filtered.map((doc) => { const words = [doc.description, ...doc.sections.flatMap((s) => [...s.paragraphs, ...(s.bullets ?? [])])].join(" ").trim().split(/\s+/).filter(Boolean).length; return <div className="document-row" key={doc.id}><strong>{doc.title}</strong><div className="doc-category-cell"><span>{doc.category}</span><span>⌄</span></div><span><em className="badge-chip">{meta.title === doc.title ? meta.badge : "Overview"}</em></span><span>~{words}</span><span>{doc.updated.replace(", 2026", "")}</span><div className="doc-actions"><button onClick={() => { setActiveId(doc.id); setMode("Reader"); }}>View</button><button onClick={() => { setActiveId(doc.id); setMode("Editor"); setEditorView("Visual"); }}>Edit</button><button className="manage-trash" title="Delete document" onClick={() => deleteDocument(doc)}>{icon("trash")}</button></div></div>; })}</div></section>}{manageTab === "settings" && <section className="management-view settings-view">
+          </div> : mode === "Manage" ? <div className="manage-page"><div className="manage-inner"><h1>Management</h1><p className="manage-subtitle">Organize categories, review documentation pages, and manage shared cloud content.</p><div className="manage-tabs"><button className={manageTab === "categories" ? "active" : ""} onClick={() => setManageTab("categories")}>Categories ({categories.length})</button><button className={manageTab === "documents" ? "active" : ""} onClick={() => setManageTab("documents")}>All Documents ({docs.length})</button><button className={manageTab === "settings" ? "active" : ""} onClick={() => setManageTab("settings")}>Settings &amp; Storage</button></div>{manageTab === "categories" && <section className="management-view"><div className="management-heading"><h2>CATEGORY HIERARCHY</h2><button className="manage-new" onClick={() => setCategoryOpen(true)}>＋ New Category</button></div><div className="category-list">{categories.map((name, index) => <div className="category-item" key={name}><div className="category-main"><span className="category-symbol">{index === 0 ? "◎" : index === 1 ? "♢" : index === 2 ? "⌂" : "♧"}</span><div><strong>{name}</strong><button className="inline-edit" onClick={() => renameCategory(name)} title={"Rename " + name}>{icon("edit")}</button><small>{docs.filter((doc) => doc.category === name).length} {docs.filter((doc) => doc.category === name).length === 1 ? "document" : "documents"}</small></div></div><div className="category-actions"><button title="Move up" disabled={index === 0} onClick={() => setCategories((items) => { const next=[...items]; [next[index-1],next[index]]=[next[index],next[index-1]]; return next; })}>↑</button><button title="Move down" disabled={index === categories.length-1} onClick={() => setCategories((items) => { const next=[...items]; [next[index],next[index+1]]=[next[index+1],next[index]]; return next; })}>↓</button><button className="manage-trash" title="Delete category" onClick={() => deleteCategory(name)}>{icon("trash")}</button></div></div>)}</div></section>}{manageTab === "documents" && <section className="management-view"><div className="document-filters"><div className="manage-search"><span>{icon("search")}</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search documents by title or category..." /></div><label>Category:<select value={category} onChange={(e) => setCategory(e.target.value)}><option value="All Categories">All ({docs.length})</option>{categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label></div><div className="document-table"><div className="document-row document-head"><span>TITLE</span><span>CATEGORY</span><span>BADGE</span><span>WORDS</span><span>UPDATED</span><span>ACTIONS</span></div>{filtered.map((doc) => { const words = [doc.description, ...doc.sections.flatMap((s) => [...s.paragraphs, ...(s.bullets ?? [])])].join(" ").trim().split(/\s+/).filter(Boolean).length; return <div className="document-row" key={doc.id}><strong>{doc.title}</strong><div className="doc-category-cell"><span>{doc.category}</span><span>⌄</span></div><span><em className="badge-chip">{meta.title === doc.title ? meta.badge : "Overview"}</em></span><span>~{words}</span><span>{doc.updated.replace(", 2026", "")}</span><div className="doc-actions"><button onClick={() => { setActiveId(doc.id); setMode("Reader"); }}>View</button><button onClick={() => { setActiveId(doc.id); setMode("Editor"); setEditorView("Visual"); }}>Edit</button><button className="manage-trash" title="Delete document" onClick={() => deleteDocument(doc)}>{icon("trash")}</button></div></div>; })}</div></section>}{manageTab === "settings" && <section className="management-view settings-view">
   <div className="settings-panel">
     <section className="settings-section site-title-section">
       <h2>SITE TITLE</h2>
       <div className="site-title-row"><input value={siteTitleDraft} onChange={(e) => setSiteTitleDraft(e.target.value)} /><button className="settings-save" onClick={() => setSiteTitle(siteTitleDraft.trim() || "System Guide Docs")}>Save</button></div>
     </section>
     <section className="settings-section storage-section">
-      <div className="settings-section-heading"><h2><span className="storage-icon">▱</span> LOCAL BROWSER STORAGE</h2><p>Your documentation is saved directly inside your browser&apos;s LocalStorage. No server or cloud database is needed.</p></div>
-      <div className="storage-metrics"><div><span>STORAGE USED</span><strong>{storageLabel}</strong><small>of ~5MB browser quota</small></div><div><span>CATEGORIES</span><strong>{categories.length}</strong></div><div><span>DOCUMENTS</span><strong>{docs.length}</strong></div></div>
+      <div className="settings-section-heading"><h2><span className="storage-icon">▱</span> MONGODB ATLAS CLOUD STORAGE</h2><p>Documentation, categories, and the site title are shared through the server database. This browser keeps a local recovery cache.</p></div>
+      <div className="storage-metrics"><div><span>CLOUD SYNC</span><strong>{syncStatus === "saving" ? "Saving…" : syncStatus === "synced" ? "Connected" : syncStatus === "loading" ? "Loading…" : "Unavailable"}</strong><small>{serverHasContent === null ? "Check server MongoDB configuration" : serverHasContent ? "Shared workspace is active" : "Cloud workspace not initialized yet"}</small></div><div><span>CATEGORIES</span><strong>{categories.length}</strong></div><div><span>DOCUMENTS</span><strong>{docs.length}</strong></div></div>
     </section>
     <section className="settings-section backup-section">
       <h2>DATA BACKUP &amp; RESTORE</h2><p>Download your entire documentation library as a portable JSON file, or restore from a previous backup.</p>

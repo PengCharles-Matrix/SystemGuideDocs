@@ -23,13 +23,16 @@ const sessionSecret = process.env.SESSION_SECRET || randomBytes(32).toString("he
 const adminUsername = process.env.ADMIN_USERNAME || "admin";
 const adminPassword = process.env.ADMIN_PASSWORD;
 let users;
+let workspaceContent;
 let mongoReady = false;
 
 if (mongoUri) {
   try {
     const client = new MongoClient(mongoUri);
     await client.connect();
-    users = client.db(mongoDbName).collection("users");
+    const database = client.db(mongoDbName);
+    users = database.collection("users");
+    workspaceContent = database.collection("workspaceContent");
     await users.createIndex({ username: 1 }, { unique: true });
     mongoReady = true;
     console.log("MongoDB connected.");
@@ -79,6 +82,50 @@ const requireAdmin = (req, res, next) => {
 const passwordHash = (password) => scryptSync(password, process.env.PASSWORD_SALT, 64);
 
 app.get("/api/health", (_req, res) => res.json({ ok: true, database: mongoReady ? "connected" : "not configured", maxFileSize }));
+
+// Shared workspace content is stored centrally in MongoDB Atlas, not per-browser localStorage.
+app.get("/api/content", async (_req, res) => {
+  if (!mongoReady || !workspaceContent) {
+    return res.status(503).json({ error: "MongoDB is not connected. Configure MONGODB_URI on the server." });
+  }
+  try {
+    const saved = await workspaceContent.findOne({ _id: "workspace" });
+    if (!saved) return res.json({ content: null, updatedAt: null });
+    return res.json({
+      content: { docs: saved.docs, categories: saved.categories, siteTitle: saved.siteTitle },
+      updatedAt: saved.updatedAt ?? null,
+    });
+  } catch (error) {
+    console.error("Could not load workspace content:", error.message);
+    return res.status(500).json({ error: "Could not load shared documentation." });
+  }
+});
+
+app.put("/api/content", requireAdmin, async (req, res) => {
+  if (!mongoReady || !workspaceContent) {
+    return res.status(503).json({ error: "MongoDB Atlas is not connected. Configure MONGODB_URI on the server." });
+  }
+  const content = req.body;
+  if (!content || !Array.isArray(content.docs) || !Array.isArray(content.categories) ||
+      typeof content.siteTitle !== "string" || content.docs.length > 5000 ||
+      content.categories.length > 500 || content.docs.some((doc) =>
+        !doc || typeof doc.id !== "string" || typeof doc.title !== "string" ||
+        typeof doc.category !== "string" || !Array.isArray(doc.sections))) {
+    return res.status(400).json({ error: "Invalid workspace content format." });
+  }
+  try {
+    const updatedAt = new Date();
+    await workspaceContent.updateOne(
+      { _id: "workspace" },
+      { $set: { docs: content.docs, categories: content.categories, siteTitle: content.siteTitle.slice(0, 200), updatedAt } },
+      { upsert: true },
+    );
+    return res.json({ saved: true, updatedAt });
+  } catch (error) {
+    console.error("Could not save workspace content:", error.message);
+    return res.status(500).json({ error: "Could not save shared documentation." });
+  }
+});
 app.get("/api/auth/me", (req, res) => {
   const session = getSession(req);
   if (!session) return res.json({ authenticated: false, role: null });
