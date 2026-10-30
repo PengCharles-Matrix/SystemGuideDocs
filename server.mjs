@@ -26,19 +26,38 @@ let users;
 let workspaceContent;
 let mongoReady = false;
 
-if (mongoUri) {
+let mongoConnecting = false;
+async function connectMongo() {
+  if (!mongoUri || mongoReady || mongoConnecting) return;
+  mongoConnecting = true;
+  const client = new MongoClient(mongoUri, {
+    serverSelectionTimeoutMS: 8000,
+    connectTimeoutMS: 8000,
+  });
   try {
-    const client = new MongoClient(mongoUri);
     await client.connect();
     const database = client.db(mongoDbName);
-    users = database.collection("users");
-    workspaceContent = database.collection("workspaceContent");
-    await users.createIndex({ username: 1 }, { unique: true });
+    const nextUsers = database.collection("users");
+    const nextWorkspaceContent = database.collection("workspaceContent");
+    await nextUsers.createIndex({ username: 1 }, { unique: true });
+    users = nextUsers;
+    workspaceContent = nextWorkspaceContent;
     mongoReady = true;
     console.log("MongoDB connected.");
   } catch (error) {
-    console.error("MongoDB connection failed:", error.message);
+    await client.close().catch(() => {});
+    console.error("MongoDB connection failed; will retry automatically:", error.message);
+  } finally {
+    mongoConnecting = false;
   }
+}
+
+if (mongoUri) {
+  // Start the HTTP server even if Atlas is temporarily unreachable, and keep
+  // retrying in the background so the app recovers without a manual restart.
+  await connectMongo();
+  const mongoRetryTimer = setInterval(() => { void connectMongo(); }, 15000);
+  mongoRetryTimer.unref();
 } else {
   console.warn("MONGODB_URI is not configured. Authentication is unavailable until MongoDB is configured.");
 }
@@ -81,12 +100,12 @@ const requireAdmin = (req, res, next) => {
 };
 const passwordHash = (password) => scryptSync(password, process.env.PASSWORD_SALT, 64);
 
-app.get("/api/health", (_req, res) => res.json({ ok: true, database: mongoReady ? "connected" : "not configured", maxFileSize }));
+app.get("/api/health", (_req, res) => res.json({ ok: true, database: mongoReady ? "connected" : mongoUri ? "disconnected" : "not configured", maxFileSize }));
 
 // Shared workspace content is stored centrally in MongoDB Atlas, not per-browser localStorage.
 app.get("/api/content", async (_req, res) => {
   if (!mongoReady || !workspaceContent) {
-    return res.status(503).json({ error: "MongoDB is not connected. Configure MONGODB_URI on the server." });
+    return res.status(503).json({ error: "MongoDB is configured but not connected. Check Atlas Network Access and the server TLS/network connection." });
   }
   try {
     const saved = await workspaceContent.findOne({ _id: "workspace" });
@@ -103,7 +122,7 @@ app.get("/api/content", async (_req, res) => {
 
 app.put("/api/content", requireAdmin, async (req, res) => {
   if (!mongoReady || !workspaceContent) {
-    return res.status(503).json({ error: "MongoDB Atlas is not connected. Configure MONGODB_URI on the server." });
+    return res.status(503).json({ error: "MongoDB Atlas is configured but not connected. Check Atlas Network Access and the server TLS/network connection." });
   }
   const content = req.body;
   if (!content || !Array.isArray(content.docs) || !Array.isArray(content.categories) ||
@@ -213,6 +232,11 @@ app.get("/uploads/:filename", requireAuth, (req, res) => {
   const filename = path.basename(req.params.filename);
   if (filename !== req.params.filename) return res.sendStatus(400);
   const filePath = path.join(uploadsDir, filename);
+  if (/\.pdf$/i.test(filename)) {
+    return res.type("application/pdf").sendFile(filePath, { headers: { "Content-Disposition": "inline", "Accept-Ranges": "bytes" } }, (error) => {
+      if (error && !res.headersSent) res.status(error.statusCode === 404 ? 404 : 500).json({ error: "Uploaded PDF not found." });
+    });
+  }
   if (/\.(png|jpe?g)$/i.test(filename)) {
     const contentType = /\.png$/i.test(filename) ? "image/png" : "image/jpeg";
     return res.type(contentType).sendFile(filePath, { headers: { "Content-Disposition": "inline" } }, (error) => {

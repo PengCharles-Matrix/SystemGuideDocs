@@ -1,8 +1,33 @@
-import { useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { categoryOrder as initialCategoryOrder, initialDocs } from "./data";
 import type { Doc } from "./types";
+import { EditorContent, useEditor } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import { Markdown } from "@tiptap/markdown";
+import Underline from "@tiptap/extension-underline";
+import FontFamily from "@tiptap/extension-font-family";
+import Color from "@tiptap/extension-color";
+import { TextStyle } from "@tiptap/extension-text-style";
+import Highlight from "@tiptap/extension-highlight";
+import Image from "@tiptap/extension-image";
+import DOMPurify from "dompurify";
+const PdfDocumentViewer = lazy(() => import("./PdfDocumentViewer"));
 
 const isInlineImageFile = (name: string) => /\.(png|jpe?g)$/i.test(name);
+
+const RichTextStyle = TextStyle.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      fontSize: {
+        default: null,
+        parseHTML: (element: HTMLElement) => element.style.fontSize || null,
+        renderHTML: (attributes: Record<string, unknown>) => attributes.fontSize ? { style: "font-size: " + attributes.fontSize } : {},
+      },
+    };
+  },
+});
+const richEditorExtensions = [StarterKit.configure({ underline: false }), Markdown, Underline, RichTextStyle, FontFamily, Color, Highlight.configure({ multicolor: true }), Image];
 
 const icon = (name: string) => ({
   page: "▤", folder: "▱", plus: "+", search: "⌕", share: "↗", edit: "✎",
@@ -18,7 +43,7 @@ function renderInlineImages(source: string, index: number): React.ReactNode {
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(source)) !== null) {
     if (match.index > last) nodes.push(source.slice(last, match.index));
-    nodes.push(<img key={"inline-image-" + index + "-" + match.index} className="doc-inline-image" src={match[2]} alt={match[1]} loading="lazy" />);
+    nodes.push(<img key={"inline-image-" + index + "-" + match.index} className="doc-inline-image is-zoomable-image" src={match[2]} alt={match[1]} loading="lazy" tabIndex={0} role="button" onClick={() => window.dispatchEvent(new CustomEvent("systemguide:preview-image", { detail: { src: match![2], alt: match![1] } }))} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); window.dispatchEvent(new CustomEvent("systemguide:preview-image", { detail: { src: match![2], alt: match![1] } })); } }} />);
     last = pattern.lastIndex;
   }
   if (last === 0) return source;
@@ -32,6 +57,9 @@ function renderDocParagraph(paragraph: string, index: number) {
     const image = paragraph.match(/^!\[([^\]]*)\]\((.+)\)$/);
     if (image) return <p key={index}>{renderInlineImages(paragraph, index)}</p>;
     const link = paragraph.match(/^\[([^\]]+)\]\((.+)\)$/);
+    if (link && /\.pdf(?:[?#].*)?$/i.test(decodeURIComponent(link[2]))) {
+      return <Suspense key={index} fallback={<p className="pdf-load-status">Loading PDF viewer…</p>}><PdfDocumentViewer fileUrl={link[2]} fileName={link[1]} /></Suspense>;
+    }
     if (link) return <p key={index}><a href={link[2]} target={link[2].startsWith("data:") || link[2].startsWith("/") ? undefined : "_blank"} rel="noreferrer" download={link[2].startsWith("data:") ? link[1].replace(/^Download /, "") : undefined}>{link[1]}</a></p>;
     return <p key={index}>{renderInlineImages(paragraph, index)}</p>;
   }
@@ -68,6 +96,15 @@ function App() {
   const [categoryOpen, setCategoryOpen] = useState(false);
   const [newCategory, setNewCategory] = useState("");
   const [draft, setDraft] = useState("");
+  const [lightboxImage, setLightboxImage] = useState<{ src: string; alt: string } | null>(null);
+  const lastEditorSelection = useRef<{ from: number; to: number } | null>(null);
+  const editor = useEditor({
+    extensions: richEditorExtensions,
+    content: "",
+    contentType: "markdown",
+    immediatelyRender: false,
+    onUpdate: ({ editor: currentEditor }) => setDraft(currentEditor.getMarkdown()),
+  });
   const [meta, setMeta] = useState({ title: "", description: "", category: "", badge: "Overview" });
   const [activeSectionId, setActiveSectionId] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState<Array<{ name: string; url: string; size: number; uploadedAt: string }>>([]);
@@ -77,6 +114,14 @@ function App() {
   const [serverContentLoaded, setServerContentLoaded] = useState(false);
   const [serverHasContent, setServerHasContent] = useState<boolean | null>(null);
   const [syncStatus, setSyncStatus] = useState<"loading" | "saving" | "synced" | "error">("loading");
+  useEffect(() => {
+    const showImage = (event: Event) => {
+      const detail = (event as CustomEvent<{ src?: string; alt?: string }>).detail;
+      if (detail?.src) setLightboxImage({ src: detail.src, alt: detail.alt || "Uploaded image" });
+    };
+    window.addEventListener("systemguide:preview-image", showImage);
+    return () => window.removeEventListener("systemguide:preview-image", showImage);
+  }, []);
   useEffect(() => { localStorage.setItem("systemguide-docs", JSON.stringify(docs)); }, [docs]);
   // Load the shared workspace from MongoDB Atlas. localStorage is retained only as a
   // recovery cache and as the one-time source for migrating an existing browser workspace.
@@ -208,14 +253,24 @@ function App() {
   }, [filtered, activeId]);
 
   useEffect(() => {
+    if (!editor || editor.getMarkdown() === draft) return;
+    editor.commands.setContent(draft, { contentType: "markdown", emitUpdate: false });
+  }, [editor, draft]);
+
+  useEffect(() => {
     if (!active) return;
     setActiveSectionId(active.sections[0]?.id ?? "");
-    setDraft(active.sections.map((s) => {
-      const bullets = s.bullets?.length ? "\n\n" + s.bullets.map((b) => "- " + b).join("\n") : "";
-      return "## " + s.title + "\n" + s.paragraphs.join("\n\n") + bullets;
-    }).join("\n\n"));
+    if (active.contentHtml && editor) {
+      editor.commands.setContent(active.contentHtml, { contentType: "html", emitUpdate: false });
+      setDraft(editor.getMarkdown());
+    } else {
+      setDraft(active.sections.map((s) => {
+        const bullets = s.bullets?.length ? "\n\n" + s.bullets.map((b) => "- " + b).join("\n") : "";
+        return "## " + s.title + "\n" + s.paragraphs.join("\n\n") + bullets;
+      }).join("\n\n"));
+    }
     setMeta({ title: active.title, description: active.description, category: active.category, badge: "Overview" });
-  }, [active]);
+  }, [active, editor]);
 
   useEffect(() => {
     const reader = document.querySelector<HTMLElement>(".reader-content");
@@ -300,10 +355,27 @@ function App() {
 
   const createCategory = () => {
     const value = newCategory.trim();
-    if (!value || categories.includes(value)) return;
+    if (!value || categories.some((item) => item.toLocaleLowerCase() === value.toLocaleLowerCase())) {
+      if (value) window.alert("That category already exists.");
+      return;
+    }
     setCategories((items) => [...items, value]);
     setNewCategory("");
     setCategoryOpen(false);
+  };
+
+  const createPdfPage = (file: { name: string; url: string }) => {
+    const id = "pdf-" + Date.now();
+    const title = file.name.replace(/\.pdf$/i, "").replace(/[-_]+/g, " ").trim() || "PDF Document";
+    const next: Doc = {
+      id, category: categories[0] ?? "Getting Started", title,
+      description: "PDF document — browse every page, zoom, search, print, or download in the built-in viewer.",
+      author: "Documentation Team", updated: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), readTime: 1,
+      sections: [{ id: "pdf-document", title: "Document", paragraphs: ["[" + file.name.replace(/[\\[\\]]/g, "") + "](" + file.url + ")"] }],
+    };
+    setDocs((current) => [...current, next]);
+    setActiveId(id);
+    setMode("Reader");
   };
 
   const createPage = () => {
@@ -337,18 +409,56 @@ function App() {
         })
       : active.sections;
     setDocs((current) => current.map((doc) => doc.id === active.id
-      ? { ...doc, title: meta.title.trim() || "Untitled Page", description: meta.description, category: meta.category, sections } : doc));
+      ? { ...doc, title: meta.title.trim() || "Untitled Page", description: meta.description, category: meta.category, sections, contentHtml: active.id.startsWith("pdf-") || /^\[(info|tip|note|warning|steps|code)\]/im.test(draft) ? undefined : editor?.getHTML() ?? doc.contentHtml } : doc));
     if (!categories.includes(meta.category)) setCategories((items) => [...items, meta.category]);
     setMode("Reader");
   };
 
   const insert = (token: string) => {
-    const textarea = document.querySelector<HTMLTextAreaElement>(".editor-canvas");
-    const start = textarea?.selectionStart ?? draft.length;
-    const end = textarea?.selectionEnd ?? draft.length;
-    const next = draft.slice(0, start) + token + draft.slice(end);
-    setDraft(next);
-    requestAnimationFrame(() => { textarea?.focus(); textarea?.setSelectionRange(start + token.length, start + token.length); });
+    if (!editor) return;
+    editor.chain().focus().insertContent(token, { contentType: "markdown" }).run();
+  };
+  const restoreEditorSelection = () => {
+    if (!editor) return;
+    const chain = editor.chain().focus();
+    const selection = lastEditorSelection.current;
+    if (selection && selection.from <= editor.state.doc.content.size && selection.to <= editor.state.doc.content.size) {
+      chain.setTextSelection(selection);
+    }
+    return chain;
+  };
+  const rememberEditorSelection = () => {
+    if (!editor) return;
+    const { from, to } = editor.state.selection;
+    lastEditorSelection.current = { from, to };
+  };
+  const applyFontSize = (size: string) => {
+    if (!editor) return;
+    const chain = restoreEditorSelection();
+    if (!chain) return;
+    chain.setMark("textStyle", { fontSize: size }).run();
+    editor.commands.focus();
+  };
+  const applyFontFamily = (family: string) => {
+    if (!editor) return;
+    const chain = restoreEditorSelection();
+    if (!chain) return;
+    chain.setFontFamily(family).run();
+    editor.commands.focus();
+  };
+  const applyTextColor = (color: string) => {
+    if (!editor) return;
+    const chain = restoreEditorSelection();
+    if (!chain) return;
+    chain.setColor(color).run();
+    editor.commands.focus();
+  };
+  const handleImageClick = (event: React.MouseEvent<HTMLElement>) => {
+    const target = event.target;
+    if (target instanceof HTMLImageElement) {
+      event.preventDefault();
+      setLightboxImage({ src: target.currentSrc || target.src, alt: target.alt || "Uploaded image" });
+    }
   };
 
   const renameCategory = (name: string) => {
@@ -382,7 +492,7 @@ function App() {
   const exportJson = () => {
     const blob = new Blob([JSON.stringify({ siteTitle, categories, docs }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob); const a = document.createElement("a");
-    a.href = url; a.download = "systemguide-docs.json"; a.click(); URL.revokeObjectURL(url);
+    a.href = url; a.download = "systemguide-docs.json"; a.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const importJson = (event: ChangeEvent<HTMLInputElement>) => {
@@ -457,7 +567,8 @@ function App() {
             const image = line.match(/^!\[([^\]]*)\]\((.+)\)$/);
             if (image) return <p key={n}><img src={image[2]} alt={image[1]} style={{ maxWidth: "100%", height: "auto", display: "block" }} /></p>;
             const link = line.match(/^\[([^\]]+)\]\((.+)\)$/);
-            if (link) return <p key={n}><a href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a></p>;
+            if (link && /\.pdf(?:[?#].*)?$/i.test(decodeURIComponent(link[2]))) return <Suspense key={n} fallback={<p className="pdf-load-status">Loading PDF viewer…</p>}><PdfDocumentViewer fileUrl={link[2]} fileName={link[1]} compact /></Suspense>;
+        if (link) return <p key={n}><a href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a></p>;
             return <p key={n}>{line}</p>;
           })}
         </div>
@@ -471,6 +582,7 @@ function App() {
         const imagePattern = /!\[([^\]]*)\]\((\/uploads\/[^)]+)\)/g;
         if (imagePattern.test(p)) { imagePattern.lastIndex = 0; const nodes: React.ReactNode[] = []; let last = 0; let found: RegExpExecArray | null; while ((found = imagePattern.exec(p)) !== null) { if (found.index > last) nodes.push(p.slice(last, found.index)); nodes.push(<img key={"preview-img-" + n + "-" + found.index} className="doc-inline-image" src={found[2]} alt={found[1]} loading="lazy" />); last = imagePattern.lastIndex; } if (last < p.length) nodes.push(p.slice(last)); return <p key={n}>{nodes}</p>; }
         const link = p.match(/^\[([^\]]+)\]\((.+)\)$/);
+        if (link && /\.pdf(?:[?#].*)?$/i.test(decodeURIComponent(link[2]))) return <Suspense key={n} fallback={<p className="pdf-load-status">Loading PDF viewer…</p>}><PdfDocumentViewer fileUrl={link[2]} fileName={link[1]} compact /></Suspense>;
         if (link) return <p key={n}><a href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a></p>;
         return <p key={n}>{p}</p>;
       })}
@@ -527,10 +639,23 @@ function App() {
               <label className="description-field">Description<input value={meta.description} onChange={(e) => updateMeta("description", e.target.value)} /></label>
             </div>
             <div className="format-toolbar">
-              <select defaultValue="System Sans" onChange={() => undefined}><option>System Sans</option><option>Serif</option><option>Mono</option></select>
-              <select defaultValue="16px" onChange={() => undefined}><option>16px</option><option>14px</option><option>18px</option><option>20px</option></select>
-              {["H1","H2","H3","B","I","U","S","</>","•","1.","❞"].map((item) => <button key={item} onClick={() => insert(item.startsWith("H") ? "#".repeat(Number(item[1])) + " " : item === "•" ? "- " : item === "1." ? "1. " : item === "❞" ? "> " : item === "B" ? "**text**" : item === "I" ? "*text*" : item === "U" ? "<u>text</u>" : item === "S" ? "~~text~~" : item === "</>" ? "`code`" : item)}>{item}</button>)}
+              <select aria-label="Font family" defaultValue="Inter" onFocus={rememberEditorSelection} onMouseDown={rememberEditorSelection} onChange={(event) => applyFontFamily(event.target.value)}><option value="Inter">Sans</option><option value="Georgia">Serif</option><option value="monospace">Mono</option><option value="Arial">Arial</option></select>
+              <select aria-label="Font size" defaultValue="16px" onFocus={rememberEditorSelection} onMouseDown={rememberEditorSelection} onChange={(event) => applyFontSize(event.target.value)}><option value="14px">14px</option><option value="16px">16px</option><option value="18px">18px</option><option value="20px">20px</option><option value="24px">24px</option><option value="32px">32px</option></select>
+              {["H1","H2","H3","B","I","U","S","</>","•","1.","❞"].map((item) => <button type="button" key={item} title={item} onClick={() => {
+                if (!editor) return;
+                if (["H1","H2","H3"].includes(item)) editor.chain().focus().toggleHeading({ level: Number(item[1]) as 1 | 2 | 3 }).run();
+                else if (item === "B") editor.chain().focus().toggleBold().run();
+                else if (item === "I") editor.chain().focus().toggleItalic().run();
+                else if (item === "U") editor.chain().focus().toggleUnderline().run();
+                else if (item === "S") editor.chain().focus().toggleStrike().run();
+                else if (item === "</>") editor.chain().focus().toggleCode().run();
+                else if (item === "•") editor.chain().focus().toggleBulletList().run();
+                else if (item === "1.") editor.chain().focus().toggleOrderedList().run();
+                else if (item === "❞") editor.chain().focus().toggleBlockquote().run();
+              }}>{item}</button>)}
               <span className="toolbar-divider" />
+              <label className="toolbar-color" title="Text color">A<input type="color" aria-label="Text color" defaultValue="#30343a" onPointerDown={rememberEditorSelection} onFocus={rememberEditorSelection} onChange={(event) => applyTextColor(event.target.value)} /></label>
+              <button type="button" onClick={() => editor?.chain().focus().toggleHighlight({ color: "#fff2a8" }).run()} title="Highlight text">▨</button>
               <button onClick={() => insert("\n\n[Info] Add helpful context here.")}>ⓘ Info</button><button onClick={() => insert("\n\n[Tip] Add a practical tip here.")}>♧ Tip</button><button onClick={() => insert("\n\n[Warning] Describe a risk or caution here.")}>△ Warning</button><button onClick={() => insert("\n\n[Steps]\n1. First step\n2. Second step\n3. Third step")}>☷ Steps</button><button onClick={() => insert("\n\n[Note] Add an important note here.")}>▤ Note</button><button onClick={() => insert("\n\n[Code]\nPaste code here")}>⌘ Code</button><button type="button" onClick={() => document.getElementById("systemguide-editor-file-upload")?.click()}>⇧ Upload Files</button><input id="systemguide-editor-file-upload" className="visually-hidden-input" type="file" onChange={uploadEditorFile} />
             </div>
             <div className="uploaded-files-toggle-row">
@@ -541,11 +666,15 @@ function App() {
               <div className="uploaded-files-heading"><strong>Shared uploaded files</strong><span>{uploadedFiles.length} file{uploadedFiles.length === 1 ? "" : "s"} stored on this server</span><button type="button" className="uploaded-files-close" aria-label="Close shared uploaded files" onClick={() => setShowUploadedFiles(false)}>×</button></div>
               {uploadError && <p className="upload-status-error">{uploadError}</p>}
               {uploading && <p className="upload-status">Uploading file…</p>}
-              {uploadedFiles.length === 0 && !uploading ? <p className="upload-status">No files uploaded yet. Files uploaded here are visible to other visitors of this site.</p> : <ul className="uploaded-files-list">{uploadedFiles.map((file) => { const imageFile = isInlineImageFile(file.name); return <li key={file.url}><a href={file.url} {...(imageFile ? { target: "_blank", rel: "noreferrer" } : { download: true })}>{file.name}</a><span>{file.size >= 1024 * 1024 ? (file.size / 1024 / 1024).toFixed(1) + " MB" : (file.size / 1024).toFixed(1) + " KB"}</span><button type="button" onClick={() => insert(imageFile ? "\n\n![" + file.name.replace(/[\[\]]/g, "") + "](" + file.url + ")" : "\n\n[Download " + file.name.replace(/[\[\]]/g, "") + "](" + file.url + ")")}>{imageFile ? "Insert image" : "Insert link"}</button></li>; })}</ul>}
+              {uploadedFiles.length === 0 && !uploading ? <p className="upload-status">No files uploaded yet. Files uploaded here are visible to other visitors of this site.</p> : <ul className="uploaded-files-list">{uploadedFiles.map((file) => { const imageFile = isInlineImageFile(file.name); const pdfFile = /\.pdf$/i.test(file.name); return <li key={file.url}><a href={file.url} {...(imageFile || pdfFile ? { target: "_blank", rel: "noreferrer" } : { download: true })}>{file.name}</a><span>{file.size >= 1024 * 1024 ? (file.size / 1024 / 1024).toFixed(1) + " MB" : (file.size / 1024).toFixed(1) + " KB"}</span>{pdfFile && <button type="button" onClick={() => createPdfPage(file)}>Create PDF page</button>}<button type="button" onClick={() => insert(imageFile ? "\n\n![" + file.name.replace(/[\[\]]/g, "") + "](" + file.url + ")" : "\n\n[Download " + file.name.replace(/[\[\]]/g, "") + "](" + file.url + ")")}>{imageFile ? "Insert image" : pdfFile ? "Insert viewer link" : "Insert link"}</button></li>; })}</ul>}
             </section>}
             <div className={"editor-body view-" + editorView.toLowerCase()}>
-              {(editorView === "Visual" || editorView === "Split") && <div className="editor-pane"><div className="pane-label">EDITOR</div><textarea className="editor-canvas" value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} /></div>}
-              {(editorView === "Split" || editorView === "HTML") && <div className="preview-pane"><div className="pane-label">{editorView === "HTML" ? "HTML" : "PREVIEW"}</div><div className="preview-card">{renderPreview(draft)}</div></div>}
+              {(editorView === "Visual" || editorView === "Split") && <div className="editor-pane"><div className="pane-label">EDITOR</div><div className="editor-canvas rich-editor-canvas" onClick={handleImageClick}><EditorContent editor={editor} onBlur={rememberEditorSelection} /></div></div>}
+              {(editorView === "Split" || editorView === "HTML") && <div className="preview-pane"><div className="pane-label">{editorView === "HTML" ? "HTML" : "PREVIEW"}</div><div className="preview-card" onClick={handleImageClick}>{editorView === "HTML"
+                ? <pre className="html-source">{editor?.getHTML() ?? ""}</pre>
+                : /\[(info|tip|note|warning|steps|code)\]/i.test(draft) || /\.pdf(?:[?#\s)]|$)/i.test(draft)
+                  ? renderPreview(draft)
+                  : <div className="saved-rich-content" onClick={handleImageClick} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(editor?.getHTML() ?? "") }} />}</div></div>}
             </div>
           </div> : mode === "Manage" ? <div className="manage-page"><div className="manage-inner"><h1>Management</h1><p className="manage-subtitle">Organize categories, review documentation pages, and manage shared cloud content.</p><div className="manage-tabs"><button className={manageTab === "categories" ? "active" : ""} onClick={() => setManageTab("categories")}>Categories ({categories.length})</button><button className={manageTab === "documents" ? "active" : ""} onClick={() => setManageTab("documents")}>All Documents ({docs.length})</button><button className={manageTab === "settings" ? "active" : ""} onClick={() => setManageTab("settings")}>Settings &amp; Storage</button></div>{manageTab === "categories" && <section className="management-view"><div className="management-heading"><h2>CATEGORY HIERARCHY</h2><button className="manage-new" onClick={() => setCategoryOpen(true)}>＋ New Category</button></div><div className="category-list">{categories.map((name, index) => <div className="category-item" key={name}><div className="category-main"><span className="category-symbol">{index === 0 ? "◎" : index === 1 ? "♢" : index === 2 ? "⌂" : "♧"}</span><div><strong>{name}</strong><button className="inline-edit" onClick={() => renameCategory(name)} title={"Rename " + name}>{icon("edit")}</button><small>{docs.filter((doc) => doc.category === name).length} {docs.filter((doc) => doc.category === name).length === 1 ? "document" : "documents"}</small></div></div><div className="category-actions"><button title="Move up" disabled={index === 0} onClick={() => setCategories((items) => { const next=[...items]; [next[index-1],next[index]]=[next[index],next[index-1]]; return next; })}>↑</button><button title="Move down" disabled={index === categories.length-1} onClick={() => setCategories((items) => { const next=[...items]; [next[index],next[index+1]]=[next[index+1],next[index]]; return next; })}>↓</button><button className="manage-trash" title="Delete category" onClick={() => deleteCategory(name)}>{icon("trash")}</button></div></div>)}</div></section>}{manageTab === "documents" && <section className="management-view"><div className="document-filters"><div className="manage-search"><span>{icon("search")}</span><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search documents by title or category..." /></div><label>Category:<select value={category} onChange={(e) => setCategory(e.target.value)}><option value="All Categories">All ({docs.length})</option>{categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label></div><div className="document-table"><div className="document-row document-head"><span>TITLE</span><span>CATEGORY</span><span>BADGE</span><span>WORDS</span><span>UPDATED</span><span>ACTIONS</span></div>{filtered.map((doc) => { const words = [doc.description, ...doc.sections.flatMap((s) => [...s.paragraphs, ...(s.bullets ?? [])])].join(" ").trim().split(/\s+/).filter(Boolean).length; return <div className="document-row" key={doc.id}><strong>{doc.title}</strong><div className="doc-category-cell"><span>{doc.category}</span><span>⌄</span></div><span><em className="badge-chip">{meta.title === doc.title ? meta.badge : "Overview"}</em></span><span>~{words}</span><span>{doc.updated.replace(", 2026", "")}</span><div className="doc-actions"><button onClick={() => { setActiveId(doc.id); setMode("Reader"); }}>View</button><button onClick={() => { setActiveId(doc.id); setMode("Editor"); setEditorView("Visual"); }}>Edit</button><button className="manage-trash" title="Delete document" onClick={() => deleteDocument(doc)}>{icon("trash")}</button></div></div>; })}</div></section>}{manageTab === "settings" && <section className="management-view settings-view">
   <div className="settings-panel">
@@ -565,9 +694,18 @@ function App() {
 </section>}</div></div> : <div className="reader-content">
             <div className="article-wrap">
               <div className="breadcrumbs"><span>Docs</span><b>›</b><span>{active.category}</span><b>›</b><strong>{active.title}</strong></div>
-              <div className="article-toolbar"><span className="pill">Overview</span><div><button onClick={() => navigator.clipboard?.writeText(window.location.href + "#" + active.id)}>{icon("share")} Share</button>{role === "admin" && <button onClick={() => setMode("Editor")}>{icon("edit")} Edit</button>}</div></div>
+              <div className="article-toolbar"><span className="pill">Overview</span><div><button onClick={async () => {
+                const shareUrl = window.location.origin + window.location.pathname + "#" + active.id;
+                try {
+                  if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(shareUrl);
+                  else { const field = document.createElement("textarea"); field.value = shareUrl; document.body.appendChild(field); field.select(); document.execCommand("copy"); field.remove(); }
+                  window.alert("Page link copied.");
+                } catch { window.prompt("Copy this page link:", shareUrl); }
+              }}>{icon("share")} Share</button>{role === "admin" && <button onClick={() => setMode("Editor")}>{icon("edit")} Edit</button>}</div></div>
               <article><h1>{active.title}</h1><p className="lead">{active.description}</p><div className="meta">{active.author}<span>•</span><span>Updated {active.updated}</span></div><hr />
-                {active.sections.map((section) => <section className="doc-section" id={section.id} key={section.id}><h2>{section.title}</h2>{section.paragraphs.map((paragraph, index) => renderDocParagraph(paragraph, index))}{section.bullets && <ul>{section.bullets.map((bullet) => <li key={bullet}>{bullet}</li>)}</ul>}</section>)}
+                {active.contentHtml
+                  ? <div className="saved-rich-content" onClick={handleImageClick} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(active.contentHtml) }} />
+                  : active.sections.map((section) => <section className="doc-section" id={section.id} key={section.id}><h2>{section.title}</h2>{section.paragraphs.map((paragraph, index) => renderDocParagraph(paragraph, index))}{section.bullets && <ul>{section.bullets.map((bullet) => <li key={bullet}>{bullet}</li>)}</ul>}</section>)}
                 <nav className="doc-pagination" aria-label="Document navigation">
                   <button className="doc-nav-button previous" disabled={!previousDoc} onClick={() => openDoc(previousDoc)}><span className="doc-nav-label">← Previous</span><strong>{previousDoc?.title ?? "No previous document"}</strong></button>
                   <button className="doc-nav-button next" disabled={!nextDoc} onClick={() => openDoc(nextDoc)}><span className="doc-nav-label">Next →</span><strong>{nextDoc?.title ?? "No next document"}</strong></button>
@@ -578,6 +716,11 @@ function App() {
           </div>}
         </main>
       </div>
+      {lightboxImage && <div className="image-lightbox" role="dialog" aria-modal="true" aria-label="Image preview" onClick={() => setLightboxImage(null)} onKeyDown={(event) => { if (event.key === "Escape") setLightboxImage(null); }}>
+        <button className="image-lightbox-close" type="button" aria-label="Close image preview" onClick={() => setLightboxImage(null)}>×</button>
+        <img src={lightboxImage.src} alt={lightboxImage.alt} onClick={(event) => event.stopPropagation()} />
+        <p>{lightboxImage.alt}</p>
+      </div>}
     </div>
   );
 }

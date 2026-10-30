@@ -8,3 +8,11 @@ data/uploads/
 .env
 .env.*
 !.env.example
+
+# Local recovery artifacts, runtime logs, and release backups
+.backups/
+*.log
+*.before-reader-layout-*
+dist.before-reader-layout-*/
+.deploy-backups/
+.last-deploy-backup

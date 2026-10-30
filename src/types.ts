@@ -7,6 +7,8 @@ export type Doc = {
   updated: string;
   readTime: number;
   sections: Section[];
+  contentHtml?: string;
+  contentMarkdown?: string;
 };
 
 export type Section = {
